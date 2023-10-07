@@ -6,14 +6,26 @@ import subprocess
 import signal
 import sys
 
+def get_custom_instruction():
+    try:
+        with open('custom_instruction.txt', 'r') as f:
+            return f.read().strip()
+    except FileNotFoundError:
+        print("Custom instruction file not found. Using default instruction.")
+        return "Please perform the task as instructed."
+
 database_path = f'/Users/{os.environ.get("LOGNAME") or os.environ.get("USER")}/Library/Messages/chat.db'
-seen_messages = []
-verbose_mode = False
+seen_messages = set()
+verbose_mode = True
 send_message_in_paragraphs = True
+
+interpreter.system_message = get_custom_instruction()
+interpreter.auto_run = True
 
 def verbose_print(message):
     if verbose_mode:
         print(message)
+
 
 def get_last_five_contacts():
     verbose_print("Getting the last five contacts...")
@@ -57,7 +69,7 @@ def get_latest_imessage_from_contact(contact):
     last_rowid = None
 
     # If message_data is None or is an empty string, try the next older message
-    while not message_data or not message_data[0].strip():
+    while not message_data or (message_data[0] and not message_data[0].strip()):
         curs.execute("SELECT text, ROWID FROM message WHERE handle_id=? AND (ROWID<? OR ? IS NULL) AND text IS NOT NULL AND text != '' ORDER BY date DESC LIMIT 1;", (handle_id[0], last_rowid, last_rowid))
         message_data = curs.fetchone()
 
@@ -83,7 +95,7 @@ def send_message(contact, message):
         # Escape double quotes and backslashes for AppleScript
         chunk_escaped = chunk.replace("\\", "\\\\").replace("\"", "\\\"")
 
-        seen_messages.append(chunk_escaped)
+        seen_messages.add(chunk_escaped)
         
         applescript = f'''
         tell application "Messages"
@@ -97,6 +109,8 @@ def send_message(contact, message):
             print(f"AppleScript execution failed: {e}")
 
 def process_message(contact, message):
+    verbose_print("Processing received message...")
+
     accumulated_response = ""
     for chunk in interpreter.chat(message, stream=True):
         if 'message' in chunk:
@@ -119,19 +133,20 @@ def poll_for_messages(contacts):
     global seen_messages
     
     # Ignore the last message that's there
-    seen_messages = [get_latest_imessage_from_contact(contact) for contact in contacts]
+    seen_messages = {get_latest_imessage_from_contact(contact) for contact in contacts}
     
+
     verbose_print("Starting to poll for messages...")
     while True:
         for contact in contacts:
             verbose_print("Checking for new message...")
             latest_message = get_latest_imessage_from_contact(contact)
-            if latest_message not in seen_messages:
-                print(f"\n\n> {latest_message}\n")
-                seen_messages.append(latest_message)
+            if latest_message and latest_message not in seen_messages:
+                print(f"\n\n> New Message: {latest_message}\n")
+                seen_messages.add(latest_message)
                 process_message(contact, latest_message)
-            print("\n(Listening)")
-
+            else:
+                print("\n(Listening)")
         time.sleep(4)
 
 def signal_handler(sig, frame):
